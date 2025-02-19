@@ -47,6 +47,7 @@ REGION = config("REGION")
 API_VERSION = config("API_VERSION")
 OPENAI_API_KEY = config("OPENAI_API_KEY")
 BITRIX24_API_URL= config("BITRIX24_API_URL")
+BITRIX24_API_URL1= config("BITRIX24_API_URL1")
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

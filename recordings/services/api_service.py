@@ -154,86 +154,182 @@ def rename_audio_files(extract_path):
                 os.rename(old_path, new_path)
                 print(f"Renamed: {file} -> {phone_number}")  # Print renamed file for debugging
 
-# def transcribe_audio(file_path):
-#     """Transcribe an MP3 file using OpenAI Whisper API."""
-#     try:
-#         openai.api_key = settings.OPENAI_API_KEY  
-#         with open(file_path, "rb") as audio_file:
-#             response = openai.Audio.transcribe("whisper-1", audio_file)
-        
-#         transcript = response.get("text", "")
-#         print(f"Transcript for {file_path}: {transcript}")  # Print transcript for debugging
-#         return transcript
-#     except Exception as e:
-#         logger.error(f"Error transcribing audio: {e}", exc_info=True)
-#         raise
-
-# def analyze_feedback(transcript):
-#     """Analyze call transcript and provide AI-driven feedback."""
-#     try:
-#         prompt = f"""
-#         Analyze the following customer service call transcript and provide feedback:
-#         - Identify areas where the agent could improve.
-#         - Was the agent polite, clear, and helpful?
-#         - Were the customer's concerns properly addressed?
-#         - Any suggestions to improve customer comfort?
-
-#         Transcript:
-#         {transcript}
-#         """
-#         response = openai.ChatCompletion.create(
-#             model="gpt-4",
-#             messages=[{"role": "system", "content": "You are an AI call feedback analyzer."},
-#                       {"role": "user", "content": prompt}]
-#         )
-#         feedback = response["choices"][0]["message"]["content"]
-#         print(f"Feedback: {feedback}")  # Print feedback for debugging
-#         return feedback
-#     except Exception as e:
-#         logger.error(f"Error analyzing feedback: {e}", exc_info=True)
-#         raise
-import requests
-
-def upload_mp3_and_feedback_to_bitrix24(mp3_path, phone_number, feedback):
-    """Upload the MP3 file and feedback to Bitrix24 lead based on phone number."""
+def transcribe_audio(file_path):
+    """Transcribe an MP3 file using OpenAI Whisper API."""
     try:
-        # Extract last 4 digits from phone number
-        last_four_digits = phone_number[-4:]
+        openai.api_key = settings.OPENAI_API_KEY  
+        with open(file_path, "rb") as audio_file:
+            response = openai.Audio.transcribe("whisper-1", audio_file)
+        
+        transcript = response.get("text", "")
+        print(f"Transcript for {file_path}: {transcript}")
+        return transcript
+    except Exception as e:
+        print(f"Error transcribing audio: {e}")
+        raise
 
-        # Search for leads using the last 4 digits
+def analyze_feedback(transcript):
+    """Analyze call transcript for feedback including sentiment analysis."""
+    try:
+        sentiment_prompt = f"""
+        Analyze the sentiment of this call transcript. 
+        Rate it as Positive, Neutral, or Negative and provide reasoning.
+        
+        Transcript:
+        {transcript}
+        """
+
+        sentiment_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": "You are a sentiment analysis expert."},
+                      {"role": "user", "content": sentiment_prompt}]
+        )
+
+        sentiment = sentiment_response["choices"][0]["message"]["content"]
+        print(f"Sentiment Analysis: {sentiment}")
+
+        feedback_prompt = f"""
+        Provide detailed feedback on this customer service call transcript:
+        - Identify areas where the agent could improve.
+        - Was the agent polite, clear, and helpful?
+        - Were the customer's concerns properly addressed?
+        - Suggestions to improve customer experience.
+
+        Transcript:
+        {transcript}
+        """
+
+        feedback_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": "You are an AI call feedback analyzer."},
+                      {"role": "user", "content": feedback_prompt}]
+        )
+
+        feedback = feedback_response["choices"][0]["message"]["content"]
+        print(f"Feedback: {feedback}")
+
+        return f"Sentiment: {sentiment}\n\nFeedback:\n{feedback}"
+    except Exception as e:
+        print(f"Error analyzing feedback: {e}")
+        raise
+import requests
+from django.conf import settings
+
+def get_storage_id():
+    """Retrieve Bitrix24 Storage ID"""
+    storage_url = f"{settings.BITRIX24_API_URL}/disk.storage.get.json"
+    response = requests.get(storage_url, params={"id": 1})  # Default storage ID is usually 1
+    response.raise_for_status()
+    
+    storage_id = response.json().get("result", {}).get("ID")
+    print(f"✅ Retrieved Storage ID: {storage_id}")  # Debugging output
+    
+    return storage_id
+
+
+
+def get_folder_id():
+    """Retrieves a valid folder ID where MP3 files should be uploaded."""
+    try:
+        response = requests.get(f"{settings.BITRIX24_API_URL}/disk.storage.get.json", params={"id": 1})  # Assuming storage ID is 1
+        response.raise_for_status()
+        result = response.json()
+        
+        if "result" in result and "ID" in result["result"]:
+            folder_id = result["result"]["ID"]
+            print(f"✅ Folder ID retrieved: {folder_id}")
+            return folder_id
+        else:
+            print("❌ Failed to retrieve folder ID:", result)
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error retrieving folder ID: {e}")
+        return None
+
+def upload_mp3(mp3_path):
+    """Uploads an MP3 file to Bitrix24 Disk folder."""
+    try:
+        folder_id = get_folder_id()
+        if not folder_id:
+            print("❌ No valid folder found for uploading.")
+            return None
+
+        # 1️⃣ Request an Upload URL from Bitrix24
+        upload_url_request = f"{settings.BITRIX24_API_URL}/disk.folder.uploadfile.json"
+        params = {"id": folder_id}  # Uploading to a folder
+        response = requests.post(upload_url_request, json=params)
+        response.raise_for_status()
+
+        upload_info = response.json()
+        if "result" not in upload_info or "uploadUrl" not in upload_info["result"]:
+            print("❌ Failed to get upload URL:", upload_info)
+            return None
+
+        upload_url = upload_info["result"]["uploadUrl"]
+        print(f"✅ Upload URL received: {upload_url}")
+
+        # 2️⃣ Upload the MP3 File
+        with open(mp3_path, "rb") as file_data:
+            files = {"file": ("recording.mp3", file_data, "audio/mpeg")}
+            upload_response = requests.post(upload_url, files=files)
+            upload_response.raise_for_status()
+
+            upload_result = upload_response.json()
+            if "result" not in upload_result or "ID" not in upload_result["result"]:
+                print("❌ File upload failed:", upload_result)
+                return None
+
+            file_id = upload_result["result"]["ID"]
+            print(f"✅ File uploaded successfully! File ID: {file_id}")
+            return file_id
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error uploading file: {e}")
+        return None
+    
+def attach_file_to_lead(lead_id, file_id):
+    """Attach uploaded file to a lead"""
+    update_url = f"{settings.BITRIX24_API_URL}/crm.lead.update.json"
+    params = {
+        "id": lead_id,
+        "fields": {
+            "UF_CRM_123456": file_id  # Replace with actual custom field ID in Bitrix24
+        }
+    }
+
+    response = requests.post(update_url, json=params)
+    response.raise_for_status()
+    return response.json()
+
+def upload_mp3_and_feedback_to_bitrix24(mp3_path, phone_number): #, feedback):
+    """Find lead, upload MP3, and attach to lead in Bitrix24"""
+    try:
+        # 1️⃣ Search for Lead by Phone Number
         search_url = f"{settings.BITRIX24_API_URL}/crm.lead.list.json"
-        search_params = {"filter[PHONE]": last_four_digits}
-        search_response = requests.get(search_url, params=search_params)
+        search_params = {"filter": {"PHONE": phone_number}, "select": ["ID"]}
+
+        search_response = requests.post(search_url, json=search_params)
         search_response.raise_for_status()
         
         leads = search_response.json().get("result", [])
         if not leads:
-            print(f"No lead found for phone number ending with {last_four_digits}")
+            print(f"❌ No lead found for phone number: {phone_number}")
+            return
+        
+        lead_id = leads[0]["ID"]
+        print(f"✅ Lead found: {lead_id}")
+
+        # 2️⃣ Upload MP3 File
+        file_id = upload_mp3(mp3_path)
+        if not file_id:
+            print("❌ MP3 Upload Failed")
             return
 
-        lead_id = leads[0]["ID"]
-        print(f"Lead ID found: {lead_id}")
+        # 3️⃣ Attach File to Lead
+        attach_file_to_lead(lead_id, file_id)
+        print(f"✅ Successfully attached MP3 file to lead {lead_id}")
 
-        #  Upload MP3 File to Bitrix24
-        upload_url = f"{settings.BITRIX24_API_URL}/disk.storage.uploadfile.json"
-        with open(mp3_path, "rb") as file_data:
-            files = {"file": file_data}
-            response = requests.post(upload_url, files=files)
-            response.raise_for_status()
-            file_url = response.json().get('result', {}).get('file', {}).get('url', '')
-            print(f"File uploaded successfully. File URL: {file_url}")
-
-        # Attach the file to the lead using the file URL
-        update_url = f"{settings.BITRIX24_API_URL}/crm.lead.update.json"
-        data = {
-            "ID": lead_id,
-            "UF_CRM_123456": file_url  # Use the correct custom field ID to store the file URL
-        }
-        update_response = requests.post(update_url, data=data)
-        update_response.raise_for_status()
-        print(f"Successfully updated lead {lead_id} with MP3 file")
-
-        # Add AI Feedback as a Comment
+        # 4️⃣ Add AI Feedback as a Comment
         # comment_url = f"{settings.BITRIX24_API_URL}/crm.timeline.comment.add.json"
         # comment_data = {
         #     "fields": {
@@ -242,12 +338,13 @@ def upload_mp3_and_feedback_to_bitrix24(mp3_path, phone_number, feedback):
         #         "COMMENT": feedback
         #     }
         # }
+
         # comment_response = requests.post(comment_url, json=comment_data)
         # comment_response.raise_for_status()
-        # print(f"Successfully uploaded feedback to lead {lead_id}")
+        # print(f"✅ Successfully uploaded feedback to lead {lead_id}")
 
-    except Exception as e:
-        print(f"Error uploading data to Bitrix24: {e}")
+    except requests.exceptions.RequestException as e:
+        print("❌ Error uploading data to Bitrix24:", e)
         raise
 
 def fetch_and_download_call_recordings(object_id=None):
@@ -274,18 +371,17 @@ def fetch_and_download_call_recordings(object_id=None):
                 zip_path = download_zip_file(token, region, zip_name)
                 extract_path = extract_zip_file(zip_path)
 
+                rename_audio_files(extract_path)  # Rename files before processing
+
                 for file in os.listdir(extract_path):
                     if file.endswith(".mp3") or file.endswith(".wav"):
                         file_path = os.path.join(extract_path, file)
                         # transcript = transcribe_audio(file_path)
                         # feedback = analyze_feedback(transcript)
-                        # print(f"Feedback for {file}: \n{feedback}")
-
-                        # # Upload MP3 and feedback to Bitrix24
                         phone_number_from_filename = file.split(".")[0]  # Extract phone number from filename
-                        upload_mp3_and_feedback_to_bitrix24(file_path, phone_number_from_filename) #feedback)
+                        upload_mp3_and_feedback_to_bitrix24(file_path, phone_number_from_filename)#, feedback)
 
         return {"message": "Processing complete"}
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
+        print(f"Error: {e}")
         raise
